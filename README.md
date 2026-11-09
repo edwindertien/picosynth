@@ -29,7 +29,7 @@ The boards stack exactly like the tonewheel organ:
 
 ![stack design](docs/stack.jpg)
 
-The pcb files for the USB connector and MIDI input can be found in the [picotonewheel](picotonewheel) repository.
+The pcb files for the USB connector and MIDI input can be found in the [picotonewheel](../picotonewheel) repository.
 
 ### Pin Assignments
 
