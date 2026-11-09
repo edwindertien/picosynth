@@ -1,5 +1,7 @@
 # Pico Analog Synth — Polyphonic Synthesizer (USB Host + LCD panel)
 
+![full setup](docs/fullsetup.jpg)
+
 A polyphonic subtractive synthesizer for the Raspberry Pi Pico 2 (RP2350), using a Waveshare Pico-Audio Rev 2.1 DAC and a Waveshare Pico-LCD-1.14 display. It shares its platform layer (I²S audio, USB host, MIDI input, display driver) with the Pico Tonewheel Organ and receives MIDI from three simultaneous sources:
 
 - **USB device** (Pico's native USB port) — PC, DAW, or USB MIDI controller
@@ -21,8 +23,13 @@ The boards stack exactly like the tonewheel organ:
 ```
 [Pico-LCD-1.14]   ← top
 [Pico-Audio]      ← middle
+[USB and MIDI in] ← middle
 [Pico 2]          ← bottom
 ```
+
+![stack design](docs/stack.jpg)
+
+The pcb files for the USB connector and MIDI input can be found in the [picotonewheel](picotonewheel) repository.
 
 ### Pin Assignments
 
