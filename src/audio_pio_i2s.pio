@@ -1,0 +1,72 @@
+;
+; Standard I2S stereo output, 16-bit, ONE data bit per BCK  (BCK = 32 x fs).
+; For the Waveshare Pico-Audio "Initial Version" (PCM5101A DAC).
+;
+; Why this exists: audio_pio.pio (the organ's / Rev2.1 program) runs BCK at 64 x fs but changes
+; DIN only every SECOND BCK period, i.e. every data bit is on the wire twice. That is what the
+; Rev2.1's CS4344 wiring accepts, but the PCM5101A clocks DIN in on EVERY rising BCK edge
+; (TI SLAS859C: "Serial data is clocked into the PCM510xA on the rising edge of BCK"), so it
+; sees each bit doubled = a non-linear mess. Table 2 of the same datasheet lists 16-bit data at
+; BCK = 32 x fs as supported, which is exactly what this program produces.
+;
+; Pins (as for audio_pio.pio):   clock_pin_base+0 = BCK (side-set bit0)
+;                                clock_pin_base+1 = LRCK (side-set bit1)
+; Autopull 32 bits, MSB first.
+;
+; FIFO word:  | 31..16 -> sent while LRCK = 1 | 15..0 -> sent while LRCK = 0 |
+; In I2S, LRCK = 0 is the LEFT channel, so the word to push is (right << 16) | left.
+;
+; Timing: out changes DIN while BCK is low, the jmp / set cycle raises BCK. LRCK changes one BCK
+; before the MSB of its channel (the standard I2S one-bit delay). 2 PIO cycles per BCK,
+; 64 cycles per frame, so clkdiv = sys_clk / (64 x fs).
+
+.program audio_pio_i2s
+.side_set 2
+
+;                        /--- LRCK
+;                        |/-- BCK
+bitloop1:             ;  ||
+    out pins, 1       side 0b10
+    jmp x-- bitloop1  side 0b11
+    out pins, 1       side 0b00
+    set x, 14         side 0b01
+
+bitloop0:
+    out pins, 1       side 0b00
+    jmp x-- bitloop0  side 0b01
+    out pins, 1       side 0b10
+
+public entry_point:
+    set x, 14         side 0b11
+
+% c-sdk {
+#include "hardware/clocks.h"
+
+static inline void audio_pio_i2s_init(PIO pio, uint sm, uint offset,
+                                      uint data_pin, uint clock_pin_base,
+                                      uint32_t sample_freq)
+{
+    pio_gpio_init(pio, data_pin);
+    pio_gpio_init(pio, clock_pin_base);        // BCK
+    pio_gpio_init(pio, clock_pin_base + 1);    // LRCK
+
+    pio_sm_config c = audio_pio_i2s_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, data_pin, 1);
+    sm_config_set_set_pins(&c, data_pin, 1);
+    sm_config_set_sideset_pins(&c, clock_pin_base);
+    sm_config_set_out_shift(&c, false, true, 32);    // MSB first, autopull 32
+
+    // 2 PIO cycles per BCK, 32 BCK per frame  ->  clkdiv = sys_clk / (64 x fs)
+    float clkdiv = (float)clock_get_hz(clk_sys) / (64.0f * (float)sample_freq);
+    sm_config_set_clkdiv(&c, clkdiv);
+
+    pio_sm_init(pio, sm, offset, &c);
+
+    uint pin_mask = (1u << data_pin) | (3u << clock_pin_base);
+    pio_sm_set_pindirs_with_mask(pio, sm, pin_mask, pin_mask);
+    pio_sm_set_pins(pio, sm, 0);
+
+    pio_sm_exec(pio, sm, pio_encode_jmp(offset + audio_pio_i2s_offset_entry_point));
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

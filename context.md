@@ -2,13 +2,21 @@
 
 Hand-off document for the `picosynth` firmware. Read it together with `README.md` (user-facing: controls, CC map, panel) before changing anything. This file records the architecture, the rules that keep it correct, what was learned the hard way, how it is tested, and what is open.
 
-State as of **November 2026**: the restored v3 build runs on the hardware (Pico 2, Waveshare Pico-Audio Rev 2.1, Pico-LCD-1.14, AKAI MPK mini on the USB host). Stuck notes, broken voice stealing, lag and the missing display reported against v2 are resolved. Not yet recorded: measured CPU load on the Pico (see [Open items](#15-open-items)).
+State as of **November 2026**: the restored v3 build runs on the hardware (Pico 2, Waveshare Pico-Audio Rev 2.1, Pico-LCD-1.14, AKAI MPK mini on the USB host). Stuck notes, broken voice stealing, lag and the missing display reported against v2 are resolved. Both Waveshare Pico-Audio versions (Rev 2.1 / CS4344 and Initial Version / PCM5101A) are supported through `AUDIO_BOARD_REV2_1` and verified on hardware; the same driver has been ported to the tonewheel organ. Not yet recorded: measured CPU load on the Pico (see [Open items](#15-open-items)).
 
 ---
 
 ## 1. What this is
 
-A polyphonic subtractive synth (2 wavetable oscillators + noise → 4-pole ladder filter → amp, two ADSRs, LFO vibrato, bend, mono glide, tube overdrive) on the same platform layer as the Pico Tonewheel Organ (`tonewheel_usb`, V1.0): I²S on PIO2, USB host on PIO0/PIO1, MIDI from USB device + USB host + UART, ST7789 panel on SPI1. Platform files are shared **verbatim** with the organ: `audio_driver.h`, `audio_pio.pio(.h)`, `usb_host.h` (only the manager type differs), `midi_handler.h` (product name differs), `effects.h`, `lib/pio_usb/`, `platformio.ini`.
+![The complete setup](docs/fullsetup.jpg)
+
+*Complete setup: AKAI MPK mini on the USB host, synth module, two speakers.*
+
+![The assembled module](docs/stack.jpg)
+
+*The module: Pico-LCD-1.14 (top), Pico-Audio (middle), Pico 2 (bottom) in a 3D-printed holder.*
+
+A polyphonic subtractive synth (2 wavetable oscillators + noise → 4-pole ladder filter → amp, two ADSRs, LFO vibrato, bend, mono glide, tube overdrive) on the same platform layer as the Pico Tonewheel Organ (`tonewheel_usb`, V1.0): I²S on PIO2, USB host on PIO0/PIO1, MIDI from USB device + USB host + UART, ST7789 panel on SPI1. Platform files are shared **verbatim** with the organ: `audio_driver.h` + `audio_pio.pio(.h)` + `audio_pio_i2s.pio(.h)` (the two-board audio driver — keep the copies in sync), `usb_host.h` (only the manager type differs), `midi_handler.h` (product name differs), `effects.h`, `lib/pio_usb/`, `platformio.ini`.
 
 Engine/UI files are the synth's own. The synth was rebuilt (v3) on the organ's V1.0 architecture because v2 could not be made reliable (section 2).
 
@@ -19,6 +27,7 @@ Engine/UI files are the synth's own. The synth was rebuilt (v3) on the organ's V
 | v1 (`analog_synth`) | Hand-written PIO header (wrong encodings, wrong init name, no `pio_version` for RP2350) → **no sound** until the organ's real `audio_pio.pio.h` was copied. 6-page bar-graph UI. |
 | v2 (`analog_synth2`, `analog_synth_v2`) | Worked, but: stuck notes, broken stealing, clicks/pops at max filter env, lag, then the display had to be disabled. |
 | **v3** (`analog_synth_v3`) | Restored on the organ V1.0 architecture, new voice-ownership model, new LCD pipeline. |
+| v3 + two shields (Nov 2026) | Initial Version (PCM5101A) board support: distorted with the organ's PIO program (it holds each bit for two BCK periods), fixed with a standard-I²S program selected by `AUDIO_BOARD_REV2_1`. Ported to the organ. |
 
 Root causes found for v2 (all addressed in v3):
 
@@ -33,7 +42,7 @@ Root causes found for v2 (all addressed in v3):
 
 | File (`src/`) | Lines | Role |
 |---|---|---|
-| `config.h` | 113 | Pure `#define`s: feature flags, polyphony (cap / pool / steal fade), control rate, sound constants, CC map, AKAI knobs, the `HOT` macro |
+| `config.h` | 139 | Pure `#define`s: feature flags, **audio shield selector**, polyphony (cap / pool / steal fade), control rate, sound constants, CC map, AKAI knobs, the `HOT` macro |
 | `synth_params.h` | 98 | `ParamId`, `PARAM_INFO[]` (CC, colour group, grid cell), `PATCHES[][]`, `paramForCC()` — the single source of truth |
 | `synth_manager.h` | 356 | `SynthManager`: parameter → engine derivation, note allocation / stealing / glide (core 0), `tick()` (core 1) |
 | `synth_voice.h` | 169 | `SynthVoice` + `EngineParams`: the cross-core contract, `control()` (per 16 samples), `render()` (per sample) |
@@ -45,21 +54,23 @@ Root causes found for v2 (all addressed in v3):
 | `effects.h` | 194 | The organ's `Overdrive` (used), `Vibrato` and `Chorus` (unused here). Shared file, keep identical to the organ |
 | `lcd.h` | 17 | Public interface: `lcd_begin`, `ui_flush`, `ui_handle_buttons`, `ui_midi_activity`, `ui_mark_all_dirty` |
 | `lcd.cpp` | 454 | Knob panel: widgets with change keys, dirty rectangles, bulk SPI, joystick/buttons, ST7789 init |
-| `main.cpp` | 296 | `setup`/`loop` (core 0), `loop1` (core 1, SRAM, CPU load), MIDI callbacks, event log, serial commands |
+| `main.cpp` | 300 | `setup`/`loop` (core 0), `loop1` (core 1, SRAM, CPU load), MIDI callbacks, event log, serial commands, audio-board banner |
 | `midi_handler.h` | 164 | USB-MIDI device + UART MIDI parser (organ's file; product name "Analog Synth") |
 | `usb_host.h` | 112 | USB MIDI host via Pico-PIO-USB (organ's file; manager type differs) |
-| `audio_driver.h` | 66 | PIO2 I²S driver, `audio_driver_put`, `audio_driver_debug` (organ's, verbatim) |
-| `audio_pio.pio` | 83 | I²S PIO program source (organ's, verbatim) |
-| `audio_pio.pio.h` | 85 | Assembled PIO header (organ's, verbatim — do not hand-edit) |
+| `audio_driver.h` | 91 | PIO2 I²S driver, **selects pins + PIO program by `AUDIO_BOARD_REV2_1`**, `audio_driver_put` (swaps half-words for the I²S program), `audio_driver_debug`. Shared with the organ |
+| `audio_pio.pio` | 83 | Rev 2.1 (CS4344) program: BCK 64 × fs, each bit held 2 BCK (organ's, verbatim) |
+| `audio_pio.pio.h` | 85 | Assembled header for the above (organ's, verbatim — do not hand-edit) |
+| `audio_pio_i2s.pio` | 72 | Initial Version (PCM5101A) program: standard I²S, BCK 32 × fs, 1 bit per BCK |
+| `audio_pio_i2s.pio.h` | 84 | Header assembled from the `.pio` source by a hand assembler (reproduces the organ's header word for word); replaceable by `pioasm` output |
 
 | Other | Role |
 |---|---|
 | `lib/pio_usb/` | Vendored Pico-PIO-USB 0.5.3 (14 files, with the `endpoint_close` stub) |
 | `host_test/` | PC test harness: mocks, `run_tests.sh`, `test_filter/engine/lcd.cpp`, `render_panel.cpp` |
-| `tools/` | `make_figures.sh`, `gen_tables.py`, `diagrams.py`, `panel_images.py` — regenerate `images/` and the README tables |
-| `images/` | Figures used by README.md |
+| `tools/` | `make_figures.sh`, `gen_tables.py`, `diagrams.py`, `panel_images.py`, `audio_timing.py` — regenerate `docs/` and the README tables |
+| `docs/` | Figures used by README.md and context.md. Generated by `tools/`: `panel*.png`, `pipeline.png`, `cores.png`, `voices.png`, `audio_timing.png`. Hand-supplied photos (not generated): `fullsetup.jpg`, `stack.jpg` |
 
-Shared with the organ unchanged: `audio_driver.h`, `audio_pio.pio`, `audio_pio.pio.h`, `effects.h`, `lib/pio_usb/*`, `platformio.ini`. `usb_host.h` differs only by `#include "synth_manager.h"` and `extern SynthManager synth;`.
+Shared with the organ: `audio_driver.h`, `audio_pio.pio(.h)`, `audio_pio_i2s.pio(.h)`, `effects.h`, `lib/pio_usb/*`, `platformio.ini` (the audio files were extended for two boards and ported to the organ in Nov 2026). `usb_host.h` differs only by `#include "synth_manager.h"` and `extern SynthManager synth;`.
 
 Dependency rule: `config.h` is **pure `#define`s** (it also defines the `HOT` force-inline macro). Nothing in `config.h` may include another project header.
 
@@ -127,7 +138,7 @@ Measured (resonance 0): the real −3 dB point is **0.22–0.26 × nominal** (no
 4. Add its `case` to `SynthManager::_derive` (knob 0..127 → engine value; this runs on core 0, `powf` is fine there).
 5. Add the engine field to `EngineParams` and read it in `SynthVoice::control` / `render`.
 6. Add the `#define CC_…` to `config.h`.
-7. Regenerate the documentation: `tools/make_figures.sh` rewrites `images/` and writes `tools/.gen/t_cc.md`, `t_akai.md`, `t_patches.md` from the headers — paste those over the three README tables.
+7. Regenerate the documentation: `tools/make_figures.sh` rewrites `docs/` and writes `tools/.gen/t_cc.md`, `t_akai.md`, `t_patches.md` from the headers — paste those over the three README tables.
 
 **Add a patch:** add a name to `PATCH_NAMES`, a row to `PATCHES`, bump `N_PATCHES`.
 
@@ -136,6 +147,10 @@ CC routing notes: with `AKAI_REMAP 1`, CC1–8 are claimed by the MPK knobs; the
 ## 9. LCD (`lcd.cpp`)
 
 Panel: ST7789 240×135, RGB565, SPI1 (62.5 MHz requested), RAM offset **x+40, y+53**, init sequence identical to the organ's.
+
+![control panel while playing](docs/panel_played.png)
+
+*Rendered by `tools/panel_images.py` from the real `lcd.cpp` (ST7789 emulator): Init patch, 8 voices, bend down, CPU 58 % (orange), RES selected. Colour groups: green osc, cyan filter, orange amp env, magenta filter env, yellow master / FX / modulation.*
 
 - Full framebuffer `FB[240·135]` (64.8 KB) in RAM + 4 KB staging buffer `TXB` for byte-swapping (RGB565 goes out big-endian).
 - **Widgets:** ids `0..N_KNOBS−1` = knobs, `W_TOP`, `W_STAT`. Each widget has a change key (`_knobKey[]`, `_topKey`, `_statKey`); `scan()` runs every 20 ms, redraws a widget into `FB` when its key changed and sets its bit in `_pending`.
@@ -159,6 +174,8 @@ Buttons are sampled every 5 ms (debounce); UP/DOWN/LEFT/RIGHT repeat after 350 m
 
 `loop1()` runs 256 samples per call: `tick()` then `audio_driver_put()` per sample (blocks until the PIO FIFO has room, which paces the loop). **Never compute a whole buffer and then push it** — the FIFO holds only 8 samples; a long compute-only pass starves LRCK and the CS4344 auto-mutes (~200 ms of stalled LRCK).
 
+**Two audio boards.** `audio_driver.h` picks the pins and the PIO program from `AUDIO_BOARD_REV2_1`. Rev 2.1: `audio_pio.pio`, 128 PIO cycles per frame, clkdiv = sys/(128·fs) ≈ 42.5 at 240 MHz (BCK 2822.4 kHz), word `left<<16 | right`. Initial Version: `audio_pio_i2s.pio`, 64 cycles per frame, clkdiv = sys/(64·fs) ≈ 85.0 (BCK 1411.2 kHz), word `right<<16 | left` (the half sent while LRCK = 0 is the left channel). The PCM510xA also mutes when BCK/LRCK stop, so the interleave rule above applies to both DACs. `pio` (serial) prints board, divider, BCK and LRCK.
+
 CPU load: DWT cycle counter via raw registers (`0xE000EDFC`, `0xE0001004`, `0xE0001000`; CMSIS structs are not exposed in arduino-pico), budget `F_CPU·256/44100` cycles, fast-attack/fast-decay IIR, shown as the top-bar square and in `stat`.
 
 ## 11. Build and toolchain gotchas
@@ -174,15 +191,18 @@ CPU load: DWT cycle counter via raw registers (`0xE000EDFC`, `0xE0001004`, `0xE0
 9. The Waveshare Pico-Audio has **no USB socket**; the USB-A host port is external wiring on GP6/GP7.
 10. `Serial.printf("%.2f")` works in this core; the event log defers all printing out of the MIDI callbacks.
 11. The AKAI MPK mini enumerates reliably only after a short power-on delay on the USB host.
+12. **Never assume a PIO audio program is portable between DACs.** The organ's program holds every data bit for two BCK periods; the CS4344 on the Rev 2.1 accepts it, the PCM5101A (which clocks DIN in on every rising BCK edge) reads each bit twice and sounds severely distorted. This was diagnosed without a scope by emulating the PIO program from its assembled words and decoding the pins with a receiver model, after first validating the receiver on a known-good standard-I²S program (≈230 dB vs ≈2 dB). Do the same for any new DAC: find its datasheet receive rule first, then check the program against it.
+13. `AUDIO_BOARD_REV2_1` defaults to 1 and is overridable with `-D`; it cannot be detected in software, and the wrong value is silent (Initial Version pins on a Rev 2.1 board, or the reverse). The boot banner prints the selection.
 
 ## 12. Test harness (`host_test/`)
 
-The real source files compile and run on a PC against mocked Arduino / Pico headers: `mock/Arduino.h` (clock, GPIO, `String`, `Serial`), `mock/SPI.h`, `mock/hardware/sync.h`, and `plat/` replacements for the three hardware-bound platform headers. `stage.sh` copies `src/` into `stage/` swapping in `plat/`. `run_tests.sh [quick]` builds and runs everything under **AddressSanitizer + UBSan + float-cast-overflow**.
+The real source files compile and run on a PC against mocked Arduino / Pico headers: `mock/Arduino.h` (clock, GPIO, `String`, `Serial`), `mock/SPI.h`, `mock/hardware/sync.h`, and `plat/` replacements for the three hardware-bound platform headers. `stage.sh` copies `src/` into `stage/` swapping in `plat/`. `run_tests.sh [quick]` builds and runs everything (filter, display, engine, audio driver; the engine/display/filter suites under **AddressSanitizer + UBSan + float-cast-overflow**).
 
 | Suite | Notes |
 |---|---|
 | `test_filter` | A/B against the previous filter (`old/synth_filter_body.h`), `tan` accuracy, bounded output at any cutoff, NaN/runaway detection |
 | `test_engine` | `#define private public` (after the std headers) exposes core-0 bookkeeping for invariants. `delayHook` runs audio while core 0 "waits" (single-thread tests). Real two-thread tests: audio flat out (worst-case race windows) and real-time paced |
+| `test_audio` | Runs the **real** `audio_driver.h` against `mock/hardware/pio.h` (records program, config, clkdiv, pins, pushed words), replays it with `pio_emu.py` (PIO emulator for the opcodes used + I²S receiver model) and checks both boards. Rev 2.1: program byte-identical to the organ's, 44100 Hz, half-rate receiver recovers the audio. Initial Version: bit-exact both channels. `AUDIO_SRC=../include:../src` tests the tonewheel layout |
 | `test_lcd` | Includes `lcd.cpp` directly (reaches `FB`, `_sel`, `_pending`) and **emulates the ST7789**: decodes `0x2A/0x2B/0x2C`, applies the +40/+53 offsets, rebuilds the screen from the actual byte stream |
 
 Results at hand-off: filter pass; display pass; engine pass — 250 000-event torture (3 670 steals, invariants after every event), two-thread race 1.26 M control events vs 13.1 M samples, no stuck voices, no sanitizer findings.
@@ -197,6 +217,7 @@ Results at hand-off: filter pass; display pass; engine pass — 250 000-event to
 |---|---|
 | Voice | 144 B × 20 = 2.9 KB; `SynthManager` ≈ 3.9 KB; wavetables 4 × 8 KB = 32 KB |
 | LCD | framebuffer 64.8 KB + 4 KB staging; first paint 22 SPI calls / 64 811 B; one knob 6 calls / 2 157 B; largest rectangle 8 651 B ≈ 1.15 ms (assuming ≈ 60 MHz SPI) |
+| Audio clocks (240 MHz) | Rev 2.1: BCK 2822.4 kHz (64 × fs), clkdiv ≈ 42.5, 128 cycles/frame. Initial Version: BCK 1411.2 kHz (32 × fs), clkdiv ≈ 85.0, 64 cycles/frame |
 | Control rate | 16 samples = 2.756 kHz; steal fade 4 ms; `_waitFree` bound 8 ms |
 | Levels | `VOICE_SCALE` 4800 × VOL/255; default VOL 80 → ≈ 3000 per voice (of 32767), same as v2 at its default |
 | PC benchmark (x86, relative only) | 12 sustained voices 144 → 122 ns/sample; 12 voices with a moving filter envelope 156 → 106 ns/sample; `FILTER_CHEAP_SAT` no difference on x86 |
@@ -219,14 +240,14 @@ Results at hand-off: filter pass; display pass; engine pass — 250 000-event to
 Ordered by value:
 
 1. **Record hardware numbers.** CPU % with 1 / 6 / 12 held notes (+ the 4 ms steal burst, + LCD updating, + USB host active). Check the map file / `nm` that `loop1` and the voice code sit in RAM (`0x2000…`), not flash (`0x1000…`); if `SynthVoice::*` appears as separate symbols it was not inlined. Then decide whether to raise `MAX_ACTIVE_VOICES` / `SYNTH_POOL` or try `FILTER_CHEAP_SAT 1` (unmeasured on the Pico).
-2. **Second DAC shield** (CS4333 found, and the PCM5101A "Initial Version"). Postponed on purpose. Check each board's I²S pins against `AUDIO_DATA_PIN` / `AUDIO_CLOCK_PIN_BASE`; keep `audio_driver.h` shared with the organ (an `AUDIO_BOARD` define is the likely mechanism).
-3. **Sustain pedal.** Move amp sustain off CC 64 to a free number, then implement the damper (hold flag + deferred releases in `noteOff`).
-4. **Chorus.** `effects.h` already has the dual-quadrature chorus; it needs depth/rate/mix parameters. The panel is full (only row 0 / col 7 is free), so use CC-only parameters or a second page.
-5. **Velocity** → amplitude (and optionally filter), with a curve.
-6. **Band-limited oscillators** (PolyBLEP or mip-mapped wavetables) for high notes.
-7. **True-Hz filter mapping** as an option (see section 7).
-8. **Patch storage** (LittleFS) — must not run on core 1.
-9. USB hub with two devices (limited by the vendored `pio_usb` v0.5.3).
+2. **Sustain pedal.** Move amp sustain off CC 64 to a free number, then implement the damper (hold flag + deferred releases in `noteOff`).
+3. **Chorus.** `effects.h` already has the dual-quadrature chorus; it needs depth/rate/mix parameters. The panel is full (only row 0 / col 7 is free), so use CC-only parameters or a second page.
+4. **Velocity** → amplitude (and optionally filter), with a curve.
+5. **Band-limited oscillators** (PolyBLEP or mip-mapped wavetables) for high notes.
+6. **True-Hz filter mapping** as an option (see section 7).
+7. **Patch storage** (LittleFS) — must not run on core 1.
+8. USB hub with two devices (limited by the vendored `pio_usb` v0.5.3).
+9. **Obergransad (Pico W, RP2040) audio** — it has its own driver (official `<I2S.h>`, not these PIO programs) and the same `AUDIO_BOARD_REV2_1` name. Its Rev 2.1 path has not been checked against the finding in section 11 (item 12). Needs the project sources.
 
 ## 16. Working conventions for this project
 
@@ -234,4 +255,4 @@ Ordered by value:
 - Deliver changed files individually (not a re-zipped project) so each change can be diffed.
 - Update README / this file **after** a change is verified on the hardware.
 - Copy platform files verbatim from the organ; don't re-derive them.
-- Figures in `images/` are generated by `tools/` (matplotlib + the LCD emulator); they are documentation only and not needed to build.
+- Figures in `docs/` are generated by `tools/` (matplotlib + the LCD emulator); they are documentation only and not needed to build.

@@ -23,6 +23,8 @@
 #  include "usb_host.h"
 #endif
 
+static_assert(AUDIO_BOARD_REV2_1 == 0 || AUDIO_BOARD_REV2_1 == 1, "AUDIO_BOARD_REV2_1 must be 0 or 1 (see config.h)");
+
 SynthManager synth;
 volatile uint8_t g_cpu_load_pct = 0;     // written by core 1, read by core 0 (uint8 write is atomic)
 
@@ -125,6 +127,8 @@ void setup() {
     delay(100);
     Serial.println("=== Analog Synth ===");
     Serial.printf("voices: %d active / %d pool   control: %d samples\n", MAX_ACTIVE_VOICES, SYNTH_POOL, CONTROL_DIV);
+    Serial.printf("audio shield: %s  (DIN GP%d, BCK GP%d, LRCK GP%d)  <- silent if this is not your board\n",
+                  AUDIO_BOARD_NAME, AUDIO_DATA_PIN, AUDIO_CLOCK_PIN_BASE, AUDIO_CLOCK_PIN_BASE + 1);
 #endif
 
     Wavetable::init();

@@ -1,8 +1,10 @@
 # Pico Analog Synth — Polyphonic Synthesizer (USB Host + LCD panel)
 
-![full setup](docs/fullsetup.jpg)
+![The complete setup: AKAI MPK mini, the synth module and two speakers](docs/fullsetup.jpg)
 
-A polyphonic subtractive synthesizer for the Raspberry Pi Pico 2 (RP2350), using a Waveshare Pico-Audio Rev 2.1 DAC and a Waveshare Pico-LCD-1.14 display. It shares its platform layer (I²S audio, USB host, MIDI input, display driver) with the Pico Tonewheel Organ and receives MIDI from three simultaneous sources:
+*The complete setup: an AKAI MPK mini on the USB host socket, the synth module (Pico-LCD-1.14, Pico-Audio and Pico 2 in a 3D-printed holder) and two speakers.*
+
+A polyphonic subtractive synthesizer for the Raspberry Pi Pico 2 (RP2350), using either version of the Waveshare Pico-Audio DAC shield (Rev 2.1 or Initial Version, see [Audio shield versions](#audio-shield-versions)) and a Waveshare Pico-LCD-1.14 display. It shares its platform layer (I²S audio, USB host, MIDI input, display driver) with the Pico Tonewheel Organ and receives MIDI from three simultaneous sources:
 
 - **USB device** (Pico's native USB port) — PC, DAW, or USB MIDI controller
 - **USB host** (GP6/GP7 socket) — one USB MIDI keyboard or controller (developed with an AKAI MPK mini)
@@ -23,23 +25,24 @@ The boards stack exactly like the tonewheel organ:
 ```
 [Pico-LCD-1.14]   ← top
 [Pico-Audio]      ← middle
-[USB and MIDI in] ← middle
 [Pico 2]          ← bottom
 ```
 
-![stack design](docs/stack.jpg)
+![The assembled module](docs/stack.jpg)
 
-The pcb files for the USB connector and MIDI input can be found in the [picotonewheel](../picotonewheel) repository.
+*The assembled module in its 3D-printed holder: the LCD board with joystick and two buttons on top, the audio board in the middle, the Pico 2 at the bottom. The speakers connect to the audio board's output; the USB cables carry the MIDI host connection and the Pico's own USB port.*
 
 ### Pin Assignments
 
-**Pico-Audio Rev 2.1 (I²S — hard-wired on PCB, CS4344 DAC):**
+**Pico-Audio (I²S — hard-wired on the PCB; the pins depend on the board version):**
 
-| Signal | GPIO | Notes |
-|--------|------|-------|
-| I2S DIN | GP22 | Audio data |
-| I2S BCK | GP26 | Bit clock |
-| I2S LRCK | GP27 | Word select |
+| Signal | Rev 2.1 (CS4344) | Initial Version (PCM5101A) | Notes |
+|--------|------------------|----------------------------|-------|
+| I2S DIN | GP22 | GP26 | Audio data |
+| I2S BCK | GP26 | GP27 | Bit clock |
+| I2S LRCK | GP27 | GP28 | Word select |
+
+Which column applies is set by `AUDIO_BOARD_REV2_1` in `config.h` (see [Audio shield versions](#audio-shield-versions)).
 
 Audio uses **PIO2** to leave PIO0/PIO1 free for the USB host (TX = PIO0, RX = PIO1).
 
@@ -79,6 +82,26 @@ The USB host specification calls for 15 kΩ pull-downs on *both* data lines; the
 
 **MIDI UART:** RX on **GP5** (31250 baud, `Serial2`).
 
+### Audio shield versions
+
+![audio timing](docs/audio_timing.png)
+
+Two different Waveshare Pico-Audio boards exist. They carry different DACs and different pinouts, and software cannot tell them apart — **the wrong setting is silent**. Check the PCB: the later board has "Rev2.1" printed on it.
+
+| | Rev 2.1 | Initial Version |
+|---|---|---|
+| Marking | "Rev2.1" on the PCB | none |
+| DAC | CS4344 | PCM5101A |
+| DIN / BCK / LRCK | GP22 / GP26 / GP27 | GP26 / GP27 / GP28 |
+| PIO program | `audio_pio.pio` — BCK = 64 × fs, each data bit held for two BCK periods | `audio_pio_i2s.pio` — standard I²S, BCK = 32 × fs, one data bit per BCK |
+| `AUDIO_BOARD_REV2_1` | `1` (default) | `0` |
+
+Select the board in `config.h`, or without editing any file with `build_flags = -DAUDIO_BOARD_REV2_1=0` (any other value stops the build). The setting chooses **both the pins and the PIO program**. The boot banner and the serial `pio` command show the selected board, its pins and the BCK frequency (2822.4 kHz for the Rev 2.1, 1411.2 kHz for the Initial Version).
+
+**Why two programs.** The Rev 2.1 program changes DIN only every second BCK period, and the Rev 2.1 accepts that. The PCM5101A clocks DIN in on **every** rising BCK edge ("serial data is clocked into the PCM510xA on the rising edge of BCK", TI SLAS859C), so it reads each bit twice and sounds severely distorted (figure above, top). The Initial Version therefore needs standard I²S — the datasheet lists 16-bit data at BCK = 32 × fs as supported — and it generates its own system clock from BCK, so no MCLK is needed. The audio driver (`audio_driver.h`) swaps the left/right half-words for the I²S program so that left stays left.
+
+Both boards were verified on hardware. The driver is also tested on a PC (see [Testing](#testing)).
+
 ---
 
 ## Building
@@ -111,6 +134,14 @@ pio run -e pico2_tone --target upload
 #define ENABLE_SERIAL     1
 // ENABLE_USB_HOST defaults to 1; the pico2_nohost and pico_tone envs pass -DENABLE_USB_HOST=0
 ```
+
+### Audio shield
+
+```cpp
+#define AUDIO_BOARD_REV2_1  1   // 1 = Rev 2.1 (CS4344)   0 = Initial Version (PCM5101A)
+```
+
+Defaults to 1; override with `-DAUDIO_BOARD_REV2_1=0` in `build_flags`. It selects pins **and** PIO program (see [Audio shield versions](#audio-shield-versions)).
 
 ### Polyphony
 
@@ -310,7 +341,11 @@ Joystick **PRESS** cycles through three complete patches (each sets *every* para
 
 ## Display
 
-The panel is shown at the top of this document; the numbered figure with CC labels is in [MIDI](#midi).
+The panel is shown near the top of this document; the figure with CC labels is in [MIDI](#midi). While playing it looks like this:
+
+![control panel while playing](docs/panel_played.png)
+
+*An unedited Init patch with an 8-note chord held: eight voice pips (green; they turn red at the 12-voice cap), the pitch-bend bar left of centre, the CPU square orange (50–79 %), the MIDI dot lit, and the resonance knob selected (white ring, its value in the top bar).*
 
 ### Top bar (y = 0..17)
 
@@ -389,19 +424,20 @@ cd host_test
 ./run_tests.sh quick    # fast pass
 ```
 
-`run_tests.sh` stages the real sources (`stage.sh` swaps in mocks for just `audio_driver.h`, `midi_handler.h` and `usb_host.h`), builds with AddressSanitizer + UBSan and runs all three suites.
+`run_tests.sh` stages the real sources (`stage.sh` swaps in mocks for just `audio_driver.h`, `midi_handler.h` and `usb_host.h`), builds with AddressSanitizer + UBSan and runs all four suites.
 
 | Suite | What it checks |
 |---|---|
 | `test_filter` | New filter matches the previous one within 1 % at every cutoff; `tan` approximation error 0.036 %; bounded output at *any* requested cutoff (peak ≤ 1.16); NaN / runaway detection |
 | `test_engine` | Parameter table; attack/sustain/release; polyphony cap and newest-note-wins; releasing voices stolen before held ones; pool exhaustion; same-note retrigger, duplicates and stale note-offs; glide and vibrato maths; every parameter swept at extremes; **250 000-event random torture** with invariants checked after every event; **two real threads** (audio flat out and real-time paced) with ≈ 1.3 million control events against 13 million samples |
+| `test_audio` | **Audio driver, both boards.** The real `audio_driver.h` runs against a mocked pico-sdk that records everything it programs (program, clock divider, pins, every sample pushed); that is replayed through a PIO emulator and decoded with an I²S receiver model (rising-edge sampling). Rev 2.1: program byte-identical to the organ's, 44100 Hz, recovered by the half-rate receiver it needs. Initial Version: bit-exact left and right over 2 896 samples, left on LRCK = 0. Pass `AUDIO_SRC=../include:../src` to test the tonewheel layout |
 | `test_lcd` | Emulates the ST7789 (decodes the real command/window stream): panel always equals the framebuffer, single-knob update = 6 SPI calls / 2 KB, idle = zero traffic, MIDI dot dims by itself, joystick repeat, patch cycling, debounce |
 
 ---
 
 ## Known limitations and next steps
 
-- **Second DAC shield** — only the Rev 2.1 (CS4344) is supported. Boards with other DACs (CS4333, the PCM5101A "Initial Version") need their pin mapping checked against `AUDIO_DATA_PIN` / `AUDIO_CLOCK_PIN_BASE`; supporting two shields is postponed.
+- **Other DAC boards** — only the two Waveshare Pico-Audio versions are supported (`AUDIO_BOARD_REV2_1`). A board that wants a different bit format or clock needs its own PIO program; do not assume a program is portable between DACs.
 - **Chorus** — `effects.h` already contains the organ's dual-quadrature chorus; it only needs knobs and CCs.
 - **Velocity** is ignored; **CC 64 is the amp sustain level** (no sustain pedal).
 - **Aliasing** — the saw and square wavetables are not band-limited; high notes alias. The filter hides most of it.

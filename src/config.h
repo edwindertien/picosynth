@@ -33,9 +33,35 @@
                                  // 0: CC1 = mod wheel, CC5 = glide time (GM standard)
 #define MIDI_PROGCHANGE_PATCHES 1
 
-// ---- I2S pins (Waveshare Pico-Audio) -----------------------
-#define AUDIO_DATA_PIN        22
-#define AUDIO_CLOCK_PIN_BASE  26 // BCK = GP26, LRCK = GP27 (automatic)
+// ---- Audio shield: Waveshare Pico-Audio, two different boards -------------------
+// The two boards carry different DACs and different pinouts, and software cannot tell
+// them apart. The wrong setting is not "a bit off", it is SILENT. Check the PCB.
+//
+//   1 = "Rev2.1" (printed on the board)             CS4344 DAC   DIN GP22, BCK GP26, LRCK GP27
+//       The board all development so far used. Default.
+//   0 = "Initial Version" (no revision marking)     PCM5101A DAC DIN GP26, BCK GP27, LRCK GP28
+//
+// Switch without editing this file:  build_flags = ... -DAUDIO_BOARD_REV2_1=0
+//
+// The setting selects the pins AND the PIO program (see audio_driver.h):
+//   1  audio_pio.pio      BCK = 64 x fs, each data bit held for two BCK periods. The Rev2.1 accepts
+//                         this; it is the organ's proven program.
+//   0  audio_pio_i2s.pio  standard I2S, BCK = 32 x fs, one data bit per BCK. The PCM5101A clocks DIN
+//                         in on EVERY rising BCK edge (TI SLAS859C) and needs this. The Rev2.1
+//                         program sounds badly distorted on it. It generates its own system clock
+//                         from BCK (no MCLK needed).
+#ifndef AUDIO_BOARD_REV2_1
+#define AUDIO_BOARD_REV2_1  1
+#endif
+#if AUDIO_BOARD_REV2_1
+  #define AUDIO_BOARD_NAME        "Rev2.1 (CS4344)"
+  #define AUDIO_DATA_PIN          22   // DIN
+  #define AUDIO_CLOCK_PIN_BASE    26   // BCK = GP26, LRCK = GP27 (automatic)
+#else
+  #define AUDIO_BOARD_NAME        "Initial Version (PCM5101A)"
+  #define AUDIO_DATA_PIN          26   // DIN
+  #define AUDIO_CLOCK_PIN_BASE    27   // BCK = GP27, LRCK = GP28 (automatic)
+#endif
 
 // ---- Audio -------------------------------------------------
 #define SAMPLE_RATE    44100
